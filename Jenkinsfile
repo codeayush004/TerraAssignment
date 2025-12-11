@@ -1,78 +1,74 @@
 pipeline {
-  agent any
-  environment {
-    // Jenkins secret text credentials (must exist)
-    ARM_CLIENT_ID       = credentials('azure-sp-client-id')
-    ARM_CLIENT_SECRET   = credentials('azure-sp-client-secret')
-    ARM_TENANT_ID       = credentials('azure-sp-tenant-id')
-    ARM_SUBSCRIPTION_ID = credentials('azure-sp-sub-id')
-  }
-  parameters {
-    string(name: 'MY_IP_CIDR', defaultValue: '0.0.0.0/0', description: 'Your IP/CIDR for SSH (recommended: x.x.x.x/32)')
-    string(name: 'VM_SIZE',   defaultValue: 'Standard_B1ms', description: 'VM size to use (override terraform variable vm_size)')
-    booleanParam(name: 'AUTO_APPLY', defaultValue: false, description: 'If true, skip manual approval and auto-apply the plan (use with caution)')
-  }
-  stages {
-    stage('Checkout') {
-      steps { checkout scm }
+    agent any
+
+    environment {
+    ARM_CLIENT_ID     = credentials('azure-sp-client-id')      // service principal client id
+    ARM_CLIENT_SECRET = credentials('azure-sp-client-secret')  // service principal secret
+    ARM_TENANT_ID     = credentials('azure-sp-tenant-id')      // tenant id
+    ARM_SUBSCRIPTION_ID = credentials('azure-sp-sub-id') 
     }
 
-    stage('Azure Login') {
-      steps {
-        sh '''
-          set -e
-          az --version || (echo "az cli not found" && exit 1)
-          az login --service-principal -u "$ARM_CLIENT_ID" -p "$ARM_CLIENT_SECRET" --tenant "$ARM_TENANT_ID"
-          az account set --subscription "$ARM_SUBSCRIPTION_ID"
-        '''
-      }
-    }
+    stages {
 
-    stage('Terraform Init') {
-      steps {
-        sh '''
-          set -e
-          terraform --version || (echo "terraform not found" && exit 1)
-          terraform init -input=false
-        '''
-      }
-    }
-
-    stage('Terraform Plan') {
-      steps {
-        // pass both my_ip_cidr and vm_size as -var overrides
-        sh '''
-          set -e
-          terraform plan -out=tfplan -input=false -var="my_ip_cidr=${params.MY_IP_CIDR}" -var="vm_size=${params.VM_SIZE}"
-        '''
-      }
-    }
-
-    stage('Terraform Apply') {
-      steps {
-        script {
-          if (params.AUTO_APPLY) {
-            // fully automated apply (no manual approval)
-            sh 'terraform apply -auto-approve tfplan'
-          } else {
-            input message: "Apply Terraform plan to create Azure infra?"
-            sh 'terraform apply -auto-approve tfplan'
-          }
+        stage('Checkout') {
+            steps {
+                echo 'Cloning the repository...'
+                checkout scm
+            }
         }
-      }
-    }
-  }
 
-  post {
-    success {
-      sh 'terraform output -json > tf_outputs.json || true'
-      archiveArtifacts artifacts: 'tf_outputs.json', fingerprint: true
+        stage('Terraform Init') {
+            steps {
+                echo 'Initializing Terraform...'
+                sh '''
+                    terraform --version
+                    terraform init -input=false
+                '''
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                echo 'Validating Terraform configuration...'
+                sh 'terraform validate'
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                echo 'Creating Terraform plan...'
+                sh 'terraform plan -out=tfplan -input=false'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                input message: 'Do you approve to apply the Terraform changes?'
+                echo 'Applying Terraform changes...'
+                sh 'terraform apply -auto-approve tfplan'
+            }
+        }
+
+        // ✅ Added stage for safe infrastructure destruction
+        stage('Terraform Destroy') {
+            steps {
+                input message: 'Are you sure you want to destroy all infrastructure?'
+                sh '''
+                    echo "Destroying Terraform-managed infrastructure..."
+                    terraform destroy -auto-approve
+                '''
+            }
+        }
     }
-    cleanup {
-      sh 'az logout || true'
+
+    post {
+        success {
+            echo '✅ Terraform pipeline executed successfully!'
+        }
+        failure {
+            echo '❌ Terraform pipeline failed. Check logs for details.'
+        }
     }
-    always {
-      echo "Pipeline finished. Check tf_outputs.json artifact for outputs (private key saved to tf_generated_key.pem if configured in Terraform)."
-    }
-  }
 }
+
+
