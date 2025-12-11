@@ -50,7 +50,7 @@ variable "private_subnet_cidr" {
 
 variable "vm_size" {
   type    = string
-  default = "Standard_D2a_v4"
+  default = "B2as_v2"
 }
 
 variable "admin_username" {
